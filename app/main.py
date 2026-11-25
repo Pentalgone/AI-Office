@@ -1384,23 +1384,6 @@ def get_agent_messages(
     return messages
 
 
-@app.get("/agents/{agent_id}/messages", response_model=list[AgentMessageResponse])
-def get_agent_messages(
-    agent_id: int, unread_only: bool = False, db: Session = Depends(get_db)
-):
-    agent = db.query(Agent).filter(Agent.id == agent_id).first()
-
-    if not agent:
-        raise HTTPException(status_code=404, detail="Агент не найден")
-
-    query = db.query(AgentMessage).filter(AgentMessage.recipient_agent_id == agent_id)
-
-    if unread_only:
-        query = query.filter(AgentMessage.read_at.is_(None))
-
-    return query.order_by(AgentMessage.id.desc()).all()
-
-
 @app.get("/tasks/{task_id}/messages", response_model=list[AgentMessageResponse])
 def get_task_messages(task_id: int, db: Session = Depends(get_db)):
     task = db.query(Task).filter(Task.id == task_id).first()
