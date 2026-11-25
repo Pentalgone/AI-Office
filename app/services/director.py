@@ -15,8 +15,8 @@ class AIDirector:
 
         cleaned = response.strip()
         if cleaned.startswith("```"):
-            cleaned = re.sub(r"^\`\`\`(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
-            cleaned = re.sub(r"\s*\`\`\`$", "", cleaned)
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"\s*```$", "", cleaned)
 
         try:
             plan = json.loads(cleaned)
