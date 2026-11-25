@@ -1,5 +1,5 @@
-
 import json
+import re
 
 from app.llm.manager import create_llm_manager
 
@@ -8,130 +8,172 @@ class AIDirector:
     def __init__(self):
         self.llm = create_llm_manager()
 
-    async def create_plan(self, user_request: str, agents: list[dict]) -> dict:
-        agents_info = json.dumps(
-            agents,
-            ensure_ascii=False,
-            indent=2
-        )
+    @staticmethod
+    def _parse_json_response(response: str) -> dict:
+        if not isinstance(response, str) or not response.strip():
+            raise ValueError("AI-Директор вернул пустой ответ.")
 
+        cleaned = response.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^\`\`\`(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"\s*\`\`\`$", "", cleaned)
+
+        try:
+            plan = json.loads(cleaned)
+        except json.JSONDecodeError:
+            # Допускаем поясняющий текст вокруг одного JSON-объекта.
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start < 0 or end <= start:
+                raise ValueError("AI-Директор не вернул JSON-объект.") from None
+            try:
+                plan = json.loads(cleaned[start:end + 1])
+            except json.JSONDecodeError:
+                raise ValueError("AI-Директор вернул некорректный JSON-план.") from None
+
+        if not isinstance(plan, dict):
+            raise ValueError("Корневой элемент плана должен быть JSON-объектом.")
+        return plan
+
+    @staticmethod
+    def _validate_plan(plan: dict, agents: list[dict]) -> dict:
+        title = plan.get("title")
+        subtasks = plan.get("subtasks")
+
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("В плане отсутствует корректное название основной задачи.")
+        if len(title.strip()) > 200:
+            raise ValueError("Название основной задачи превышает 200 символов.")
+        if not isinstance(subtasks, list) or not subtasks:
+            raise ValueError("План должен содержать хотя бы одну подзадачу.")
+        if len(subtasks) > 20:
+            raise ValueError("План содержит слишком много подзадач (максимум 20).")
+
+        available_skills = {
+            agent.get("skill_code")
+            for agent in agents
+            if isinstance(agent, dict) and isinstance(agent.get("skill_code"), str)
+        }
+        if not available_skills:
+            raise ValueError("Нет доступных компетенций для назначения работы.")
+
+        normalized_titles = set()
+        validated_subtasks = []
+
+        for index, item in enumerate(subtasks, start=1):
+            if not isinstance(item, dict):
+                raise ValueError(f"Подзадача №{index} должна быть JSON-объектом.")
+
+            subtask_title = item.get("title")
+            skill_code = item.get("skill_code")
+
+            if not isinstance(subtask_title, str) or not subtask_title.strip():
+                raise ValueError(f"У подзадачи №{index} отсутствует название.")
+            subtask_title = subtask_title.strip()
+            if len(subtask_title) > 200:
+                raise ValueError(f"Название подзадачи №{index} превышает 200 символов.")
+
+            if not isinstance(skill_code, str) or skill_code not in available_skills:
+                raise ValueError(
+                    f"Подзадача №{index}: неизвестная или недоступная компетенция "
+                    f"'{skill_code}'."
+                )
+
+            normalized = subtask_title.casefold()
+            if normalized in normalized_titles:
+                raise ValueError(f"В плане обнаружена повторяющаяся подзадача: {subtask_title}")
+            normalized_titles.add(normalized)
+
+            description = item.get("description")
+            instructions = item.get("instructions")
+            if description is not None and not isinstance(description, str):
+                raise ValueError(f"Описание подзадачи №{index} должно быть строкой.")
+            if instructions is not None and not isinstance(instructions, str):
+                raise ValueError(f"Инструкции подзадачи №{index} должны быть строкой.")
+
+            validated_subtasks.append({
+                "title": subtask_title,
+                "description": description.strip() if description else "",
+                "skill_code": skill_code,
+                "instructions": instructions.strip() if instructions else "",
+            })
+
+        description = plan.get("description")
+        if description is not None and not isinstance(description, str):
+            raise ValueError("Описание основной задачи должно быть строкой.")
+
+        return {
+            "title": title.strip(),
+            "description": description.strip() if description else "",
+            "subtasks": validated_subtasks,
+        }
+
+    async def create_plan(self, user_request: str, agents: list[dict]) -> dict:
+        if not isinstance(user_request, str) or not user_request.strip():
+            raise ValueError("Запрос пользователя не должен быть пустым.")
+
+        agents_info = json.dumps(agents, ensure_ascii=False, indent=2)
         prompt = f"""
 Ты — AI-Директор компании AI-Office.
 
-Проанализируй запрос пользователя, разбей работу на подзадачи
-и подбери исполнителей из доступных сотрудников.
+Разбей запрос пользователя на конкретные, выполнимые подзадачи.
+Для каждой подзадачи выбери только skill_code из списка компетенций ниже.
+Не назначай Director исполнителем. Не выдумывай навыки и не создавай лишние задачи.
+Если задача простая, достаточно одной подзадачи.
 
-Сотрудники и их компетенции:
+Доступные сотрудники и компетенции:
 {agents_info}
 
 Запрос пользователя:
 {user_request}
 
-Правила:
-1. Создай понятный план.
-2. Разбей работу на конкретные подзадачи.
-3. Для каждой подзадачи выбери skill_code из списка сотрудников.
-4. Не назначай Director исполнителем.
-5. Не создавай лишних подзадач.
-6. Если задача простая, создай одну подзадачу.
-
-Верни исключительно JSON:
-
+Верни только один JSON-объект без Markdown и пояснений:
 {{
-    "title": "Название основной задачи",
-    "description": "Описание основной задачи",
-    "subtasks": [
-        {{
-            "title": "Название подзадачи",
-            "description": "Что необходимо сделать",
-            "skill_code": "код компетенции",
-            "instructions": "Инструкции исполнителю"
-        }}
-    ]
+  "title": "Название основной задачи",
+  "description": "Описание основной задачи",
+  "subtasks": [
+    {{
+      "title": "Название подзадачи",
+      "description": "Что необходимо сделать",
+      "skill_code": "точный код компетенции из списка",
+      "instructions": "Конкретные инструкции исполнителю"
+    }}
+  ]
 }}
 """
-
-        response = await self.llm.chat(
-            agent_role="director",
-            message=prompt
-        )
-
-        try:
-            plan = json.loads(response)
-        except json.JSONDecodeError:
-            raise ValueError(
-                "AI-Директор вернул некорректный JSON-план: "
-                + response[:500]
-            )
-
-        if not isinstance(plan, dict) or not isinstance(
-            plan.get("subtasks"), list
-        ):
-            raise ValueError("AI-Директор вернул план неверного формата.")
-
-        available_skills = {
-            agent["skill_code"] for agent in agents
-        }
-
-        for subtask in plan["subtasks"]:
-            if subtask.get("skill_code") not in available_skills:
-                raise ValueError(
-                    f"AI-Директор выбрал неизвестную компетенцию: "
-                    f"{subtask.get('skill_code')}"
-                )
-
-        return plan
+        response = await self.llm.chat(agent_role="director", message=prompt)
+        plan = self._parse_json_response(response)
+        return self._validate_plan(plan, agents)
 
     async def create_final_report(
         self,
         task_title: str,
         task_description: str,
-        reports: list[dict]
+        reports: list[dict],
     ) -> str:
-        reports_info = json.dumps(
-            reports,
-            ensure_ascii=False,
-            indent=2
-        )
-
+        reports_info = json.dumps(reports, ensure_ascii=False, indent=2)
         prompt = f"""
 Ты — AI-Директор компании AI-Office.
-Твоя задача — подготовить итоговый отчёт для пользователя
-на основе результатов работы подчинённых.
+Подготовь итоговый отчёт для пользователя исключительно на основе переданных отчётов.
 
-Основная задача:
-{task_title}
-
-Описание:
-{task_description}
+Основная задача: {task_title}
+Описание: {task_description}
 
 Принятые отчёты исполнителей:
 {reports_info}
 
 Правила:
 1. Используй только сведения из переданных отчётов.
-2. Объедини результаты в единый логичный документ.
-3. Удали дублирование информации.
-4. Сохраняй ссылки на источники, если они есть в отчётах.
-5. Не придумывай факты, компании, ссылки и цифры.
-6. Если отчёты противоречат друг другу, явно укажи это.
-7. Отделяй подтверждённые сведения от предположений.
-8. Укажи, какие вопросы остались без ответа.
-9. В конце сформулируй общий вывод и рекомендации.
-10. Если информации недостаточно, честно сообщи об этом.
+2. Объедини результаты в единый логичный документ, убери дублирование.
+3. Сохраняй ссылки на источники, если они есть в отчётах.
+4. Не придумывай факты, компании, ссылки и цифры.
+5. Явно укажи противоречия, предположения и вопросы без ответа.
+6. Если информации недостаточно, честно сообщи об этом.
+7. В конце сформулируй общий вывод и практические рекомендации.
 
-Подготовь содержательный итоговый отчёт в Markdown.
-Не возвращай JSON.
+Подготовь содержательный итоговый отчёт в Markdown. Не возвращай JSON.
 """
-
-        response = await self.llm.chat(
-            agent_role="director",
-            message=prompt
-        )
-
-        if not response or not response.strip():
-            raise ValueError(
-                "AI-Директор не сформировал итоговый отчёт."
-            )
-
+        response = await self.llm.chat(agent_role="director", message=prompt)
+        if not isinstance(response, str) or not response.strip():
+            raise ValueError("AI-Директор не сформировал итоговый отчёт.")
         return response.strip()
