@@ -143,3 +143,52 @@ def test_task_worker_processes_pending_run_and_persists_result():
         assert run.completed_at is not None
 
     test_engine.dispose()
+
+
+def test_recovery_marks_agent_idle_when_assignment_waits_for_revision():
+    test_engine = create_engine("sqlite://")
+    Base.metadata.create_all(test_engine)
+    TestSession = sessionmaker(bind=test_engine)
+
+    with TestSession() as db:
+        director = Agent(name="Director", role="director", status="idle")
+        worker = Agent(name="Analyst", role="analyst", status="working")
+        db.add_all([director, worker])
+        db.flush()
+
+        root = Task(title="Основная задача", status="in_progress", priority="normal")
+        db.add(root)
+        db.flush()
+
+        child = Task(
+            title="Подзадача",
+            parent_task_id=root.id,
+            status="in_progress",
+            priority="normal",
+        )
+        db.add(child)
+        db.flush()
+
+        assignment = TaskAssignment(
+            task_id=child.id,
+            agent_id=worker.id,
+            assigned_by_agent_id=director.id,
+            status="revision_requested",
+        )
+        run = TaskRun(task_id=root.id, status="running")
+        db.add_all([assignment, run])
+        db.commit()
+
+        worker_id = worker.id
+        assignment_id = assignment.id
+
+    assert recover_interrupted_runs(TestSession) == 1
+
+    with TestSession() as db:
+        worker = db.get(Agent, worker_id)
+        assignment = db.get(TaskAssignment, assignment_id)
+
+        assert assignment.status == "revision_requested"
+        assert worker.status == "idle"
+
+    test_engine.dispose()
