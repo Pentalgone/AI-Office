@@ -126,7 +126,7 @@ def format_source_audit(sources: list[dict]) -> str:
         title = str(source.get("page_title", "")).replace("|", "/").replace("\n", " ")[:180]
         origin = str(source.get("source_origin", "не установлено")).replace("|", "/")
         status = str(source.get("status", "unknown"))
-        excerpt = re.sub(r"\\s+", " ", str(source.get("details", "")))
+        excerpt = re.sub(r"\s+", " ", str(source.get("details", "")))
         excerpt = excerpt.replace("|", "/").replace("\n", " ")[:350]
         lines.append(f"| {url} | {origin} | {status} | {title} | {excerpt or 'Текст не получен'} |")
     lines.append(
