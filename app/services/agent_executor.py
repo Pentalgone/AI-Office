@@ -76,13 +76,29 @@ class AgentExecutor:
                 "Отчёт слишком короткий и не содержит проверяемого результата."
             )
 
+        lowered = result.casefold()
+
+        # Some GigaChat refusals are phrased as generic policy notices rather
+        # than the usual "I am an AI" boilerplate. They must never be treated
+        # as a completed report, even if a later technical audit adds headings.
+        refusal_patterns = (
+            r"разговоры на некоторые темы временно ограничены",
+            r"временно ограничены",
+            r"как любая языковая модель",
+            r"не транслирует мнение своих разработчиков",
+            r"облада\w* собственным мнением",
+        )
+        if any(re.search(pattern, lowered) for pattern in refusal_patterns):
+            raise ValueError(
+                f"Сотрудник ({agent_role}) получил отказ модели вместо результата."
+            )
+
         boilerplate_patterns = (
             r"генеративные языковые модели не обладают собственным мнением",
             r"как искусственный интеллект,? я не могу",
             r"я являюсь языковой моделью",
             r"я не могу выполнять реальные действия",
         )
-        lowered = result.casefold()
         if any(re.search(pattern, lowered) for pattern in boilerplate_patterns):
             meaningful_markers = ("##", "|", "http://", "https://", "шаг", "результат")
             if not any(marker in lowered for marker in meaningful_markers):
