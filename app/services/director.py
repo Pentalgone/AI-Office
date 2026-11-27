@@ -145,6 +145,69 @@ class AIDirector:
         plan = self._parse_json_response(response)
         return self._validate_plan(plan, agents)
 
+    @staticmethod
+    def _validate_review(plan: dict) -> dict:
+        decision = plan.get("decision")
+        feedback = plan.get("feedback", "")
+
+        if decision not in {"approve", "request_changes"}:
+            raise ValueError("AI-Директор вернул неизвестное решение по отчёту.")
+        if not isinstance(feedback, str):
+            raise ValueError("Замечания AI-Директора должны быть строкой.")
+        feedback = feedback.strip()
+
+        if decision == "request_changes" and not feedback:
+            raise ValueError("При возврате отчёта на доработку нужны замечания.")
+
+        return {
+            "decision": decision,
+            "feedback": feedback or None,
+        }
+
+    async def review_report(
+        self,
+        task_title: str,
+        task_description: str | None,
+        instructions: str | None,
+        report: str,
+    ) -> dict:
+        if not isinstance(report, str) or not report.strip():
+            raise ValueError("Нельзя проверить пустой отчёт.")
+
+        prompt = f"""
+Ты — AI-Директор компании AI-Office и принимаешь работу сотрудника.
+
+Оцени, насколько отчёт действительно выполняет поручение.
+Не принимай работу только за уверенный тон, большой объём или красивое оформление.
+Проверь соответствие задаче, наличие конкретного результата, внутреннюю согласованность,
+доказательства и ссылки там, где они требуются. Не требуй сведений, которые задача
+не предусматривала. Не выдумывай проверку фактов, которую ты не проводил.
+
+ОСНОВНАЯ ЗАДАЧА:
+{task_title}
+
+ОПИСАНИЕ:
+{task_description or "Не указано"}
+
+ПОРУЧЕНИЕ СОТРУДНИКУ:
+{instructions or "Выполнить задачу по существу."}
+
+ОТЧЁТ СОТРУДНИКА:
+{report[:18000]}
+
+Верни только JSON:
+{{
+  "decision": "approve или request_changes",
+  "feedback": "Краткое обоснование. При request_changes — конкретный список исправлений."
+}}
+
+Одобряй только если отчёт содержит пригодный результат и отвечает поручению.
+Если существенная часть не выполнена или результат нельзя использовать, верни request_changes.
+"""
+        response = await self.llm.chat(agent_role="director", message=prompt)
+        plan = self._parse_json_response(response)
+        return self._validate_review(plan)
+
     async def create_final_report(
         self,
         task_title: str,
