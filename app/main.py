@@ -83,7 +83,9 @@ def sync_agent_status(db: Session, agent_id: int):
     if not agent or agent.status == "offline":
         return
 
-    active_statuses = ["pending", "in_progress", "submitted", "revision_requested"]
+    # Сотрудник считается занятым только пока реально выполняет назначение.
+    # pending ожидает запуска, submitted ожидает проверки, revision_requested — доработки.
+    active_statuses = ["in_progress"]
 
     active_assignments = (
         db.query(TaskAssignment)
