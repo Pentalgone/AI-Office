@@ -144,7 +144,7 @@ class GitHubRepositoryClient:
 
         paths = []
         for item in tree.get("tree", []):
-            if item.get("type") != "blob":
+            if item.get("type") != "blob" or item.get("mode") not in {"100644", "100755"}:
                 continue
             try:
                 paths.append(validate_repository_path(item.get("path", "")))
