@@ -6,11 +6,8 @@ from app.db.database import SessionLocal
 from app.db.models import Agent, Task, TaskAssignment, TaskEvent, TaskRun
 
 
-ACTIVE_ASSIGNMENT_STATUSES = {
-    "pending",
+WORKING_ASSIGNMENT_STATUSES = {
     "in_progress",
-    "submitted",
-    "revision_requested",
 }
 
 
