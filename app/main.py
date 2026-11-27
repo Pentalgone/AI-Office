@@ -1731,6 +1731,24 @@ async def execute_task_workflow(task_id: int, db: Session):
         .all()
     )
 
+    execution_order = {
+        "analyst": 0,
+        "secretary": 1,
+        "developer": 2,
+        "tester": 3,
+    }
+    assignments.sort(
+        key=lambda item: (
+            execution_order.get(
+                (db.get(Agent, item.agent_id).role or "").strip().lower()
+                if db.get(Agent, item.agent_id)
+                else "",
+                4,
+            ),
+            item.id,
+        )
+    )
+
     if not assignments:
         raise HTTPException(
             status_code=409,
