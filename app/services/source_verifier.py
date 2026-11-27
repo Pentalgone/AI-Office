@@ -123,16 +123,16 @@ def format_source_audit(sources: list[dict]) -> str:
     ]
     for source in sources:
         url = str(source.get("url", "")).replace("|", "%7C")
-        title = str(source.get("page_title", "")).replace("|", "/").replace("\\n", " ")[:180]
+        title = str(source.get("page_title", "")).replace("|", "/").replace("\n", " ")[:180]
         origin = str(source.get("source_origin", "не установлено")).replace("|", "/")
         status = str(source.get("status", "unknown"))
         lines.append(f"| {url} | {origin} | {status} | {title} |")
     lines.append(
-        "\\n**Важно:** статус «page_read_claims_not_independently_verified» означает "
+        "\n**Важно:** статус «page_read_claims_not_independently_verified» означает "
         "только получение текста страницы, а не проверку публикации или утверждений. "
         "Статус «reported_url_page_read_not_independently_discovered» означает, что "
         "ссылка была взята из отчёта сотрудника и лишь технически открыта; она не "
         "является независимо найденным источником. Статус «not_in_research_context» "
         "означает, что ссылка отсутствовала в фактических материалах исследования."
     )
-    return "\\n".join(lines)
+    return "\n".join(lines)
