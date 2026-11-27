@@ -8,6 +8,7 @@ from app.services.github_repository import validate_repository_path
     "path",
     [
         "app/services/example.py",
+        "app/services/secretary.py",
         "tests/test_example.py",
         "docs/notes.md",
         "requirements-dev.txt",
