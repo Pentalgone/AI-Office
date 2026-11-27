@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -28,6 +29,7 @@ from app.db.models import (
     TaskAssignment,
     AgentMessage,
     AgentCapability,
+    TaskRun,
 )
 
 
@@ -35,7 +37,27 @@ from app.db.models import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     initialize_database()
-    yield
+
+    from app.services.task_worker import task_worker_loop
+
+    stop_event = asyncio.Event()
+    worker_task = asyncio.create_task(
+        task_worker_loop(
+            execute_task=execute_task_workflow,
+            stop_event=stop_event,
+        )
+    )
+    app.state.task_worker_stop = stop_event
+
+    try:
+        yield
+    finally:
+        stop_event.set()
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(
@@ -232,6 +254,20 @@ class TaskTreeResponse(BaseModel):
     created_at: datetime
     parent_task_id: int | None
     children: list[TaskResponse] = []
+
+
+
+class TaskRunResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    task_id: int
+    status: str
+    error: str | None
+    result_summary: str | None
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
 
 
 @app.get("/")
@@ -1656,8 +1692,7 @@ async def execute_assignment(assignment_id: int, db: Session = Depends(get_db)):
         )
 
 
-@app.post("/ai/tasks/{task_id}/run")
-async def run_ai_task(task_id: int, db: Session = Depends(get_db)):
+async def execute_task_workflow(task_id: int, db: Session):
     """
     Выполняет назначения основной задачи, автоматически проверяет отчёты
     и формирует итоговый отчёт после успешного завершения всех работ.
@@ -1673,10 +1708,10 @@ async def run_ai_task(task_id: int, db: Session = Depends(get_db)):
             detail="Запуск рабочего цикла доступен только для основной задачи",
         )
 
-    if root_task.status in {"completed", "cancelled"}:
+    if root_task.status == "cancelled":
         raise HTTPException(
             status_code=409,
-            detail=f"Нельзя запустить задачу со статусом {root_task.status}",
+            detail="Нельзя запустить отменённую задачу",
         )
 
     child_tasks = (
@@ -1832,11 +1867,14 @@ async def run_ai_task(task_id: int, db: Session = Depends(get_db)):
 
     final_report_status = "not_ready"
     if root_task.status == "completed":
-        try:
-            await generate_task_final_report(task_id=root_task.id, db=db)
-            final_report_status = "created"
-        except Exception as error:
-            final_report_status = f"generation_failed: {str(error)[:250]}"
+        if root_task.final_report:
+            final_report_status = "already_exists"
+        else:
+            try:
+                await generate_task_final_report(task_id=root_task.id, db=db)
+                final_report_status = "created"
+            except Exception as error:
+                final_report_status = f"generation_failed: {str(error)[:250]}"
 
     return {
         "task_id": root_task.id,
@@ -1849,6 +1887,97 @@ async def run_ai_task(task_id: int, db: Session = Depends(get_db)):
             else "Рабочий цикл остановился на незавершённых назначениях. Подробности указаны в результатах."
         ),
     }
+
+
+@app.post(
+    "/ai/tasks/{task_id}/run",
+    response_model=TaskRunResponse,
+    status_code=202,
+)
+def enqueue_ai_task_run(task_id: int, db: Session = Depends(get_db)):
+    root_task = db.get(Task, task_id)
+
+    if root_task is None:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+
+    if root_task.parent_task_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Запуск рабочего цикла доступен только для основной задачи",
+        )
+
+    if root_task.status == "cancelled" or (
+        root_task.status == "completed" and root_task.final_report
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Нельзя поставить в очередь задачу со статусом {root_task.status}",
+        )
+
+    existing_run = (
+        db.query(TaskRun)
+        .filter(
+            TaskRun.task_id == task_id,
+            TaskRun.status.in_(["pending", "running"]),
+        )
+        .order_by(TaskRun.id.desc())
+        .first()
+    )
+    if existing_run:
+        return existing_run
+
+    child_ids = [
+        child.id
+        for child in db.query(Task)
+        .filter(Task.parent_task_id == task_id)
+        .all()
+    ]
+    task_ids = [task_id, *child_ids]
+
+    active_assignments = (
+        db.query(TaskAssignment)
+        .filter(
+            TaskAssignment.task_id.in_(task_ids),
+            TaskAssignment.status.in_([
+                "pending",
+                "in_progress",
+                "submitted",
+                "revision_requested",
+                "failed",
+            ]),
+        )
+        .count()
+    )
+    if active_assignments == 0 and root_task.status != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail="Нет назначений, ожидающих выполнения или проверки",
+        )
+
+    run = TaskRun(task_id=task_id, status="pending")
+    db.add(run)
+    db.flush()
+
+    db.add(
+        TaskEvent(
+            task_id=task_id,
+            event_type="run_queued",
+            message=f"Запуск AI-Office №{run.id} добавлен в очередь",
+            actor="user",
+        )
+    )
+
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+@app.get("/ai/runs/{run_id}", response_model=TaskRunResponse)
+def get_ai_task_run(run_id: int, db: Session = Depends(get_db)):
+    run = db.get(TaskRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Запуск не найден")
+    return run
 
 
 @app.get("/tools/web-search")
