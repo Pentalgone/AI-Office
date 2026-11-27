@@ -102,3 +102,23 @@ def test_source_audit_includes_retrieved_excerpt_for_director_review():
     }])
     assert "Фрагмент полученного текста" in rendered
     assert "improved visibility" in rendered
+
+
+def test_analyst_search_queries_prioritize_related_reports_and_remove_urls():
+    from app.services.agent_executor import AgentExecutor
+
+    queries = AgentExecutor._build_search_queries(
+        task_title="Подтверждение информации из источников",
+        task_description="Найти подтверждающие источники для преимуществ.",
+        instructions="Проверь три исходные публикации о стоматологических ретракторах.",
+        related_reports=(
+            "Преимущество: улучшение обзора операционного поля. "
+            "Публикация: Retractor use in dentistry. "
+            "URL: https://example.org/paper"
+        ),
+    )
+
+    assert len(queries) == 2
+    assert "улучшение обзора" in queries[0]
+    assert "https://" not in queries[0]
+    assert "три исходные публикации" in queries[1]
