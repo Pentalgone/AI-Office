@@ -93,7 +93,7 @@ class AgentExecutor:
         if normalized_role == "tester":
             from app.services.github_tester import GitHubTester
 
-            context = "\\n".join(
+            context = "\n".join(
                 part for part in (task_description, instructions, related_reports)
                 if part
             )
