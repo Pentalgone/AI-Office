@@ -122,3 +122,17 @@ def test_analyst_search_queries_prioritize_related_reports_and_remove_urls():
     assert "улучшение обзора" in queries[0]
     assert "https://" not in queries[0]
     assert "три исходные публикации" in queries[1]
+
+
+
+def test_analyst_model_policy_refusal_is_rejected_as_execution_failure():
+    from app.services.agent_executor import AgentExecutor
+
+    refusal = (
+        "Как любая языковая модель, GigaChat не обладает собственным мнением. "
+        "Во избежание неправильного толкования, разговоры на некоторые темы "
+        "временно ограничены."
+    )
+
+    with pytest.raises(ValueError, match="отказ модели"):
+        AgentExecutor._validate_result(refusal, "analyst")
