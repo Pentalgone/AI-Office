@@ -59,19 +59,24 @@ def recover_interrupted_runs(session_factory=SessionLocal) -> int:
             )
             task_ids.extend(child.id for child in children)
 
-            interrupted = (
+            related_assignments = (
                 db.query(TaskAssignment)
-                .filter(
-                    TaskAssignment.task_id.in_(task_ids),
-                    TaskAssignment.status == "in_progress",
-                )
+                .filter(TaskAssignment.task_id.in_(task_ids))
                 .all()
             )
+            interrupted = [
+                assignment
+                for assignment in related_assignments
+                if assignment.status == "in_progress"
+            ]
 
-            affected_agent_ids = set()
+            # Recalculate every involved agent, including agents whose
+            # assignments are waiting for review or revision.
+            affected_agent_ids = {
+                assignment.agent_id for assignment in related_assignments
+            }
             for assignment in interrupted:
                 assignment.status = "pending"
-                affected_agent_ids.add(assignment.agent_id)
 
             for agent_id in affected_agent_ids:
                 agent = db.get(Agent, agent_id)
