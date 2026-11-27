@@ -82,3 +82,12 @@ def test_report_url_must_match_a_source_actually_received():
 
     assert result[0]["status"] == "page_read_claims_not_independently_verified"
     assert result[0]["source_origin"] == "Результат веб-поиска"
+
+
+def test_report_supplied_url_is_not_mislabeled_as_independent_discovery():
+    status = classify_fetch_status({
+        "fetch_status": "read",
+        "content": "Страница открылась",
+        "source_origin": "URL из отчёта сотрудника",
+    })
+    assert status == "reported_url_page_read_not_independently_discovered"
