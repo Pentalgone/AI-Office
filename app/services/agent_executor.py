@@ -132,9 +132,9 @@ class AgentExecutor:
         ]
         queries = []
         for candidate in candidates:
-            cleaned = re.sub(r"https?://\\S+", " ", candidate, flags=re.IGNORECASE)
+            cleaned = re.sub(r"https?://\S+", " ", candidate, flags=re.IGNORECASE)
             cleaned = re.sub(r"[#>*`|]", " ", cleaned)
-            cleaned = re.sub(r"\\s+", " ", cleaned).strip(" .,:;—-")
+            cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,:;—-")
             if len(cleaned) < 25:
                 continue
             query = cleaned[:220].strip()
