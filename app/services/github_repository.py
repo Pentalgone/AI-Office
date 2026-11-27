@@ -130,6 +130,28 @@ class GitHubRepositoryClient:
             f"/repos/{self.repository}/git/ref/heads/{quote(branch, safe='/')}",
         )
 
+    async def list_files(self, ref: str | None = None) -> list[str]:
+        branch_ref = await self.get_branch_ref(ref or self.base_branch)
+        commit = await self._request(
+            "GET",
+            f"/repos/{self.repository}/git/commits/{branch_ref['object']['sha']}",
+        )
+        tree = await self._request(
+            "GET",
+            f"/repos/{self.repository}/git/trees/{commit['tree']['sha']}",
+            params={"recursive": "1"},
+        )
+
+        paths = []
+        for item in tree.get("tree", []):
+            if item.get("type") != "blob":
+                continue
+            try:
+                paths.append(validate_repository_path(item.get("path", "")))
+            except ValueError:
+                continue
+        return sorted(set(paths))
+
     async def read_file(self, path: str, ref: str | None = None) -> str:
         safe_path = validate_repository_path(path)
         result = await self._request(
