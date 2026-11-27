@@ -102,88 +102,99 @@ class PageTextParser(HTMLParser):
 
 
 def is_safe_url(url: str) -> bool:
+    """Базовая проверка URL до сетевого обращения."""
     try:
         parsed = urlparse(url)
-
         if parsed.scheme not in ("http", "https"):
             return False
-
-        hostname = parsed.hostname
-
-        if not hostname:
+        if parsed.username or parsed.password or not parsed.hostname:
             return False
-
-        if hostname.lower() in ("localhost",):
+        if parsed.port not in (None, 80, 443):
             return False
-
+        hostname = parsed.hostname.rstrip(".").lower()
+        if hostname == "localhost" or hostname.endswith(".localhost"):
+            return False
         try:
-            ip = ipaddress.ip_address(hostname)
-
-            if not ip.is_global:
-                return False
-
+            return ipaddress.ip_address(hostname).is_global
         except ValueError:
-            pass
+            return True
+    except Exception:
+        return False
 
-        return True
 
+async def hostname_resolves_publicly(hostname: str) -> bool:
+    """Отклоняет DNS-имена, указывающие на приватные/служебные IP-адреса."""
+    import socket
+    try:
+        records = await asyncio.to_thread(
+            socket.getaddrinfo, hostname, None, type=socket.SOCK_STREAM
+        )
+        addresses = {record[4][0] for record in records}
+        return bool(addresses) and all(
+            ipaddress.ip_address(address.split("%")[0]).is_global
+            for address in addresses
+        )
     except Exception:
         return False
 
 
 async def read_page(client: httpx.AsyncClient, item: dict) -> dict:
+    current_url = item.get("url", "")
+    max_redirects = 5
     try:
-        if not is_safe_url(item["url"]):
-            item["fetch_status"] = "rejected_url"
-            return item
-
-        async with client.stream("GET", item["url"]) as response:
-            if response.status_code >= 400:
-                item["fetch_status"] = f"http_{response.status_code}"
+        for redirect_count in range(max_redirects + 1):
+            if not is_safe_url(current_url):
+                item["fetch_status"] = "rejected_url"
+                return item
+            hostname = urlparse(current_url).hostname
+            if not hostname or not await hostname_resolves_publicly(hostname):
+                item["fetch_status"] = "rejected_host"
                 return item
 
-            content_type = response.headers.get(
-                "content-type", ""
-            ).lower()
+            async with client.stream("GET", current_url, follow_redirects=False) as response:
+                if response.status_code in (301, 302, 303, 307, 308):
+                    location = response.headers.get("location")
+                    if not location or redirect_count >= max_redirects:
+                        item["fetch_status"] = "redirect_limit"
+                        return item
+                    from urllib.parse import urljoin
+                    current_url = urljoin(str(response.url), location)
+                    continue
+                if response.status_code >= 400:
+                    item["fetch_status"] = f"http_{response.status_code}"
+                    return item
+                content_type = response.headers.get("content-type", "").lower()
+                if "text/html" not in content_type:
+                    item["fetch_status"] = "not_html"
+                    return item
 
-            if "text/html" not in content_type:
-                item["fetch_status"] = "not_html"
+                chunks = []
+                total_size = 0
+                max_size = 1_000_000
+                async for chunk in response.aiter_bytes():
+                    remaining = max_size - total_size
+                    if remaining <= 0:
+                        break
+                    chunk = chunk[:remaining]
+                    chunks.append(chunk)
+                    total_size += len(chunk)
+
+                html = b"".join(chunks).decode(
+                    response.encoding or "utf-8", errors="replace"
+                )
+                parser = PageTextParser()
+                parser.feed(html)
+                item["page_title"] = parser.page_title.strip()
+                item["content"] = parser.get_text()[:6000]
+                item["final_url"] = str(response.url)
+                item["fetch_status"] = "read" if item["content"] else "empty"
                 return item
 
-            chunks = []
-            total_size = 0
-            max_size = 1_000_000
-
-            async for chunk in response.aiter_bytes():
-                remaining = max_size - total_size
-
-                if remaining <= 0:
-                    break
-
-                chunk = chunk[:remaining]
-                chunks.append(chunk)
-                total_size += len(chunk)
-
-            html = b"".join(chunks).decode(
-                response.encoding or "utf-8",
-                errors="replace"
-            )
-
-            parser = PageTextParser()
-            parser.feed(html)
-
-            item["page_title"] = parser.page_title.strip()
-            item["content"] = parser.get_text()[:6000]
-            item["final_url"] = str(response.url)
-            item["fetch_status"] = (
-                "read" if item["content"] else "empty"
-            )
-
-            return item
-
-    except Exception as e:
+        item["fetch_status"] = "redirect_limit"
+        return item
+    except Exception as error:
         item["fetch_status"] = "error"
-        item["fetch_error"] = str(e)[:200]
+        item["fetch_error"] = str(error)[:200]
         return item
 
 
@@ -223,7 +234,7 @@ async def search_web(query: str, limit: int = 5) -> list[dict]:
 
     async with httpx.AsyncClient(
         timeout=20,
-        follow_redirects=True,
+        follow_redirects=False,
         headers={
             "User-Agent": "Mozilla/5.0 AI-Office Research Bot"
         }
@@ -310,7 +321,7 @@ async def read_urls(urls: list[str]) -> list[dict]:
 
     async with httpx.AsyncClient(
         timeout=20,
-        follow_redirects=True,
+        follow_redirects=False,
         headers={
             "User-Agent": "Mozilla/5.0 AI-Office Research Bot"
         }

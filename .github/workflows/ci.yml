@@ -1,0 +1,39 @@
+name: AI-Office checks
+
+on:
+  push:
+    branches:
+      - main
+      - ai-office-upgrade
+  pull_request:
+    branches:
+      - main
+      - ai-office-upgrade
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Compile application
+        run: python -m compileall -q app tests
+
+      - name: Run regression tests
+        run: python -m pytest -q

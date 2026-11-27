@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -18,7 +19,7 @@ from app.services.web_search import search_web
 from app.services.director import AIDirector
 from sqlalchemy.orm import Session
 
-from app.db.database import Base, engine, SessionLocal
+from app.db.database import SessionLocal, initialize_database
 from app.services.dispatcher import find_available_agents, dispatch_task
 from app.services.task_manager import recalculate_task_status
 from app.db.models import (
@@ -28,14 +29,35 @@ from app.db.models import (
     TaskAssignment,
     AgentMessage,
     AgentCapability,
+    TaskRun,
 )
 
 
 # Создание таблиц при запуске сервера
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
-    yield
+    initialize_database()
+
+    from app.services.task_worker import task_worker_loop
+
+    stop_event = asyncio.Event()
+    worker_task = asyncio.create_task(
+        task_worker_loop(
+            execute_task=execute_task_workflow,
+            stop_event=stop_event,
+        )
+    )
+    app.state.task_worker_stop = stop_event
+
+    try:
+        yield
+    finally:
+        stop_event.set()
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(
@@ -61,7 +83,9 @@ def sync_agent_status(db: Session, agent_id: int):
     if not agent or agent.status == "offline":
         return
 
-    active_statuses = ["pending", "in_progress", "submitted", "revision_requested"]
+    # Сотрудник считается занятым только пока реально выполняет назначение.
+    # pending ожидает запуска, submitted ожидает проверки, revision_requested — доработки.
+    active_statuses = ["in_progress"]
 
     active_assignments = (
         db.query(TaskAssignment)
@@ -232,6 +256,20 @@ class TaskTreeResponse(BaseModel):
     created_at: datetime
     parent_task_id: int | None
     children: list[TaskResponse] = []
+
+
+
+class TaskRunResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    task_id: int
+    status: str
+    error: str | None
+    result_summary: str | None
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
 
 
 @app.get("/")
@@ -1384,23 +1422,6 @@ def get_agent_messages(
     return messages
 
 
-@app.get("/agents/{agent_id}/messages", response_model=list[AgentMessageResponse])
-def get_agent_messages(
-    agent_id: int, unread_only: bool = False, db: Session = Depends(get_db)
-):
-    agent = db.query(Agent).filter(Agent.id == agent_id).first()
-
-    if not agent:
-        raise HTTPException(status_code=404, detail="Агент не найден")
-
-    query = db.query(AgentMessage).filter(AgentMessage.recipient_agent_id == agent_id)
-
-    if unread_only:
-        query = query.filter(AgentMessage.read_at.is_(None))
-
-    return query.order_by(AgentMessage.id.desc()).all()
-
-
 @app.get("/tasks/{task_id}/messages", response_model=list[AgentMessageResponse])
 def get_task_messages(task_id: int, db: Session = Depends(get_db)):
     task = db.query(Task).filter(Task.id == task_id).first()
@@ -1635,6 +1656,8 @@ async def execute_assignment(assignment_id: int, db: Session = Depends(get_db)):
             task_description=task.description,
             instructions=instructions,
             related_reports=related_reports,
+            task_id=task.id,
+            assignment_id=assignment.id,
         )
 
         return submit_assignment_result(
@@ -1652,7 +1675,7 @@ async def execute_assignment(assignment_id: int, db: Session = Depends(get_db)):
             db.query(TaskAssignment).filter(TaskAssignment.id == assignment_id).first()
         )
 
-        if assignment:
+        if assignment and assignment.status not in {"cancelled", "completed"}:
             assignment.status = "failed"
             sync_agent_status(db, assignment.agent_id)
 
@@ -1671,6 +1694,312 @@ async def execute_assignment(assignment_id: int, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=500, detail=f"Ошибка выполнения задания: {str(e)}"
         )
+
+
+async def execute_task_workflow(task_id: int, db: Session):
+    """
+    Выполняет назначения основной задачи, автоматически проверяет отчёты
+    и формирует итоговый отчёт после успешного завершения всех работ.
+    """
+    root_task = db.get(Task, task_id)
+
+    if root_task is None:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+
+    if root_task.parent_task_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Запуск рабочего цикла доступен только для основной задачи",
+        )
+
+    if root_task.status == "cancelled":
+        raise HTTPException(
+            status_code=409,
+            detail="Нельзя запустить отменённую задачу",
+        )
+
+    child_tasks = (
+        db.query(Task)
+        .filter(Task.parent_task_id == root_task.id)
+        .order_by(Task.id.asc())
+        .all()
+    )
+    task_ids = [root_task.id, *(child.id for child in child_tasks)]
+
+    assignments = (
+        db.query(TaskAssignment)
+        .filter(TaskAssignment.task_id.in_(task_ids))
+        .order_by(TaskAssignment.id.asc())
+        .all()
+    )
+
+    execution_order = {
+        "analyst": 0,
+        "secretary": 1,
+        "developer": 2,
+        "tester": 3,
+    }
+    assignments.sort(
+        key=lambda item: (
+            execution_order.get(
+                (db.get(Agent, item.agent_id).role or "").strip().lower()
+                if db.get(Agent, item.agent_id)
+                else "",
+                4,
+            ),
+            item.id,
+        )
+    )
+
+    if not assignments:
+        raise HTTPException(
+            status_code=409,
+            detail="У задачи нет назначений для выполнения",
+        )
+
+    director = AIDirector()
+    outcomes = []
+
+    for assignment_snapshot in assignments:
+        assignment_id = assignment_snapshot.id
+        final_outcome = None
+
+        # Одна первоначальная попытка и максимум две доработки.
+        for attempt in range(3):
+            assignment = db.get(TaskAssignment, assignment_id)
+
+            if assignment is None:
+                final_outcome = {
+                    "assignment_id": assignment_id,
+                    "status": "missing",
+                }
+                break
+
+            if assignment.status != "submitted":
+                if assignment.status not in {
+                    "pending",
+                    "revision_requested",
+                    "failed",
+                }:
+                    final_outcome = {
+                        "assignment_id": assignment_id,
+                        "status": assignment.status,
+                        "message": "Назначение пропущено: оно не ожидает выполнения или проверки.",
+                    }
+                    break
+
+                try:
+                    await execute_assignment(assignment_id=assignment_id, db=db)
+                except HTTPException as error:
+                    db.expire_all()
+                    current = db.get(TaskAssignment, assignment_id)
+                    final_outcome = {
+                        "assignment_id": assignment_id,
+                        "status": current.status if current else "missing",
+                        "error": str(error.detail),
+                    }
+                    break
+
+                db.expire_all()
+                assignment = db.get(TaskAssignment, assignment_id)
+
+            if assignment is None or assignment.status != "submitted":
+                final_outcome = {
+                    "assignment_id": assignment_id,
+                    "status": assignment.status if assignment else "missing",
+                    "error": "Исполнитель не отправил отчёт на проверку.",
+                }
+                break
+
+            task = db.get(Task, assignment.task_id)
+            if task is None:
+                final_outcome = {
+                    "assignment_id": assignment_id,
+                    "status": "missing_task",
+                }
+                break
+
+            try:
+                review = await director.review_report(
+                    task_title=task.title,
+                    task_description=task.description,
+                    instructions=assignment.instructions,
+                    report=assignment.result or "",
+                )
+            except Exception as error:
+                db.add(
+                    TaskEvent(
+                        task_id=assignment.task_id,
+                        event_type="review_failed",
+                        message=(
+                            f"Не удалось проверить отчёт по назначению "
+                            f"№{assignment.id}: {str(error)[:250]}"
+                        ),
+                        actor="system",
+                    )
+                )
+                db.commit()
+                final_outcome = {
+                    "assignment_id": assignment_id,
+                    "status": "submitted",
+                    "review_error": str(error)[:250],
+                }
+                break
+
+            try:
+                process_assignment_review(
+                    assignment=assignment,
+                    reviewer_agent_id=1,
+                    decision=review["decision"],
+                    feedback=review.get("feedback"),
+                    db=db,
+                )
+                db.commit()
+                db.refresh(assignment)
+            except Exception:
+                db.rollback()
+                raise
+
+            if review["decision"] == "approve":
+                final_outcome = {
+                    "assignment_id": assignment_id,
+                    "status": "completed",
+                    "review": "approved",
+                    "attempts": attempt + 1,
+                }
+                break
+
+            if attempt == 2:
+                final_outcome = {
+                    "assignment_id": assignment_id,
+                    "status": "revision_requested",
+                    "review": "changes_requested",
+                    "attempts": attempt + 1,
+                    "feedback": review.get("feedback"),
+                }
+
+        outcomes.append(final_outcome or {
+            "assignment_id": assignment_id,
+            "status": "unknown",
+        })
+
+    recalculate_task_status(db=db, task_id=root_task.id)
+    db.commit()
+    db.refresh(root_task)
+
+    final_report_status = "not_ready"
+    if root_task.status == "completed":
+        if root_task.final_report:
+            final_report_status = "already_exists"
+        else:
+            try:
+                await generate_task_final_report(task_id=root_task.id, db=db)
+                final_report_status = "created"
+            except Exception as error:
+                final_report_status = f"generation_failed: {str(error)[:250]}"
+
+    return {
+        "task_id": root_task.id,
+        "task_status": root_task.status,
+        "assignments": outcomes,
+        "final_report_status": final_report_status,
+        "message": (
+            "Автоматический рабочий цикл завершён."
+            if root_task.status == "completed"
+            else "Рабочий цикл остановился на незавершённых назначениях. Подробности указаны в результатах."
+        ),
+    }
+
+
+@app.post(
+    "/ai/tasks/{task_id}/run",
+    response_model=TaskRunResponse,
+    status_code=202,
+)
+def enqueue_ai_task_run(task_id: int, db: Session = Depends(get_db)):
+    root_task = db.get(Task, task_id)
+
+    if root_task is None:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+
+    if root_task.parent_task_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Запуск рабочего цикла доступен только для основной задачи",
+        )
+
+    if root_task.status == "cancelled" or (
+        root_task.status == "completed" and root_task.final_report
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Нельзя поставить в очередь задачу со статусом {root_task.status}",
+        )
+
+    existing_run = (
+        db.query(TaskRun)
+        .filter(
+            TaskRun.task_id == task_id,
+            TaskRun.status.in_(["pending", "running"]),
+        )
+        .order_by(TaskRun.id.desc())
+        .first()
+    )
+    if existing_run:
+        return existing_run
+
+    child_ids = [
+        child.id
+        for child in db.query(Task)
+        .filter(Task.parent_task_id == task_id)
+        .all()
+    ]
+    task_ids = [task_id, *child_ids]
+
+    active_assignments = (
+        db.query(TaskAssignment)
+        .filter(
+            TaskAssignment.task_id.in_(task_ids),
+            TaskAssignment.status.in_([
+                "pending",
+                "in_progress",
+                "submitted",
+                "revision_requested",
+                "failed",
+            ]),
+        )
+        .count()
+    )
+    if active_assignments == 0 and root_task.status != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail="Нет назначений, ожидающих выполнения или проверки",
+        )
+
+    run = TaskRun(task_id=task_id, status="pending")
+    db.add(run)
+    db.flush()
+
+    db.add(
+        TaskEvent(
+            task_id=task_id,
+            event_type="run_queued",
+            message=f"Запуск AI-Office №{run.id} добавлен в очередь",
+            actor="user",
+        )
+    )
+
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+@app.get("/ai/runs/{run_id}", response_model=TaskRunResponse)
+def get_ai_task_run(run_id: int, db: Session = Depends(get_db)):
+    run = db.get(TaskRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Запуск не найден")
+    return run
 
 
 @app.get("/tools/web-search")
