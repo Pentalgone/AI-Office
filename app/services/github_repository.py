@@ -49,8 +49,14 @@ def validate_repository_path(path: str) -> str:
 
     normalized = path.strip().replace("\\", "/")
     pure_path = PurePosixPath(normalized)
+    raw_parts = normalized.split("/")
 
-    if pure_path.is_absolute() or any(part in {"", ".", ".."} for part in pure_path.parts):
+    if (
+        len(normalized) > 240
+        or any(ord(character) < 32 for character in normalized)
+        or pure_path.is_absolute()
+        or any(part in {"", ".", ".."} for part in raw_parts)
+    ):
         raise ValueError("Недопустимый путь к файлу проекта.")
 
     if any(part.casefold() in BLOCKED_PARTS for part in pure_path.parts):
