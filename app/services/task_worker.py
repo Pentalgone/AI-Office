@@ -87,7 +87,7 @@ def recover_interrupted_runs(session_factory=SessionLocal) -> int:
                     db.query(TaskAssignment)
                     .filter(
                         TaskAssignment.agent_id == agent_id,
-                        TaskAssignment.status.in_(ACTIVE_ASSIGNMENT_STATUSES),
+                        TaskAssignment.status.in_(WORKING_ASSIGNMENT_STATUSES),
                     )
                     .count()
                 )
