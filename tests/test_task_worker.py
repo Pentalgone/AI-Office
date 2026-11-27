@@ -58,7 +58,8 @@ def test_recover_interrupted_run_requeues_in_progress_assignment():
         assert run.status == "pending"
         assert "перезапуском" in run.error
         assert assignment.status == "pending"
-        assert worker.status == "working"
+        # A requeued assignment is waiting for the worker, not being executed.
+        assert worker.status == "idle"
 
 
 def test_claim_and_finish_task_run():
