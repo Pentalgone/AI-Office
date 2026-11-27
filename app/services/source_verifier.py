@@ -25,12 +25,8 @@ def _url_key(url: str) -> str:
         parsed = urlparse(url.strip())
         path = parsed.path.rstrip("/") or "/"
         return urlunparse((
-            parsed.scheme.lower(),
-            parsed.netloc.lower(),
-            path,
-            parsed.params,
-            parsed.query,
-            "",
+            parsed.scheme.lower(), parsed.netloc.lower(), path,
+            parsed.params, parsed.query, "",
         ))
     except Exception:
         return url.strip()
@@ -50,6 +46,8 @@ def research_requested(*parts: str | None) -> bool:
 def classify_fetch_status(item: dict) -> str:
     status = str(item.get("fetch_status") or "unknown")
     if status == "read" and (item.get("content") or "").strip():
+        if item.get("source_origin") == "URL из отчёта сотрудника":
+            return "reported_url_page_read_not_independently_discovered"
         return "page_read_claims_not_independently_verified"
     if status.startswith("http_"):
         return status
@@ -62,14 +60,7 @@ async def verify_report_sources(
     report: str,
     available_sources: list[dict] | None = None,
 ) -> list[dict]:
-    """
-    Audit cited URLs against the actual research context.
-
-    A URL absent from available_sources is never fetched just because an LLM
-    inserted it into a report. This prevents invented links from being treated
-    as research results. Without available_sources, retain the legacy safe
-    page-read check for callers that explicitly need it.
-    """
+    """Audit cited URLs against materials actually available to the employee."""
     urls = extract_urls(report)
     if not urls:
         return []
@@ -105,14 +96,7 @@ async def verify_report_sources(
     try:
         pages = await read_urls(urls)
     except Exception as error:
-        return [
-            {
-                "url": url,
-                "status": "verification_error",
-                "details": str(error)[:200],
-            }
-            for url in urls
-        ]
+        return [{"url": url, "status": "verification_error", "details": str(error)[:200]} for url in urls]
 
     by_url = {}
     for page in pages:
@@ -124,15 +108,10 @@ async def verify_report_sources(
             "details": (page.get("content") or "")[:500],
         }
 
-    return [
-        by_url.get(_url_key(url), {
-            "url": url,
-            "status": "not_checked",
-            "page_title": "",
-            "details": "Проверка страницы не вернула результата.",
-        })
-        for url in urls
-    ]
+    return [by_url.get(_url_key(url), {
+        "url": url, "status": "not_checked", "page_title": "",
+        "details": "Проверка страницы не вернула результата.",
+    }) for url in urls]
 
 
 def format_source_audit(sources: list[dict]) -> str:
@@ -144,15 +123,16 @@ def format_source_audit(sources: list[dict]) -> str:
     ]
     for source in sources:
         url = str(source.get("url", "")).replace("|", "%7C")
-        title = str(source.get("page_title", "")).replace("|", "/").replace("\n", " ")[:180]
+        title = str(source.get("page_title", "")).replace("|", "/").replace("\\n", " ")[:180]
         origin = str(source.get("source_origin", "не установлено")).replace("|", "/")
         status = str(source.get("status", "unknown"))
         lines.append(f"| {url} | {origin} | {status} | {title} |")
     lines.append(
-        "\n**Важно:** статус «page_read_claims_not_independently_verified» означает "
-        "только то, что текст страницы был получен. Доступность страницы и её заголовок не подтверждают достоверность публикации. Это также не устанавливает научную "
-        "достоверность публикации и не доказывает конкретное утверждение. "
-        "Статус «not_in_research_context» означает, что ссылка отсутствовала "
-        "в фактических материалах исследования и не должна использоваться как доказательство."
+        "\\n**Важно:** статус «page_read_claims_not_independently_verified» означает "
+        "только получение текста страницы, а не проверку публикации или утверждений. "
+        "Статус «reported_url_page_read_not_independently_discovered» означает, что "
+        "ссылка была взята из отчёта сотрудника и лишь технически открыта; она не "
+        "является независимо найденным источником. Статус «not_in_research_context» "
+        "означает, что ссылка отсутствовала в фактических материалах исследования."
     )
-    return "\n".join(lines)
+    return "\\n".join(lines)
