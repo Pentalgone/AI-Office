@@ -187,8 +187,11 @@ async def task_worker_loop(
                 "created",
                 "already_exists",
             }
+            task_cancelled = result.get("task_status") == "cancelled"
             status = (
-                "completed"
+                "cancelled"
+                if task_cancelled
+                else "completed"
                 if task_completed and report_ready
                 else "needs_attention"
             )
@@ -201,7 +204,12 @@ async def task_worker_loop(
                 run_id=run_id,
                 status=status,
                 result_summary=summary,
-                error=None if status == "completed" else result.get("message"),
+                error=(
+                    None
+                    if status == "completed"
+                    else result.get("message")
+                    or result.get("final_report_status")
+                ),
                 session_factory=session_factory,
             )
 
