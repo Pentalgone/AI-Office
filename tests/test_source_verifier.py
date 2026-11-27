@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from app.services.source_verifier import (
@@ -45,11 +47,10 @@ def test_audit_explains_limit_of_technical_check():
 
 
 
-@pytest.mark.asyncio
-async def test_report_url_not_present_in_research_context_is_flagged():
+def test_report_url_not_present_in_research_context_is_flagged():
     from app.services.source_verifier import verify_report_sources
 
-    result = await verify_report_sources(
+    result = asyncio.run(verify_report_sources(
         "Источник: https://invented.example/fake-paper",
         available_sources=[{
             "url": "https://real.example/paper",
@@ -58,17 +59,16 @@ async def test_report_url_not_present_in_research_context_is_flagged():
             "content": "Actual page text",
             "source_origin": "Результат веб-поиска",
         }],
-    )
+    ))
 
     assert len(result) == 1
     assert result[0]["status"] == "not_in_research_context"
 
 
-@pytest.mark.asyncio
-async def test_report_url_must_match_a_source_actually_received():
+def test_report_url_must_match_a_source_actually_received():
     from app.services.source_verifier import verify_report_sources
 
-    result = await verify_report_sources(
+    result = asyncio.run(verify_report_sources(
         "Источник: https://real.example/paper",
         available_sources=[{
             "url": "https://real.example/paper/",
@@ -78,7 +78,7 @@ async def test_report_url_must_match_a_source_actually_received():
             "content": "Actual page text",
             "source_origin": "Результат веб-поиска",
         }],
-    )
+    ))
 
     assert result[0]["status"] == "page_read_claims_not_independently_verified"
     assert result[0]["source_origin"] == "Результат веб-поиска"
