@@ -1,4 +1,3 @@
-import os
 import re
 
 from app.services.github_repository import GitHubRepositoryClient
