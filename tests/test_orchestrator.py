@@ -81,7 +81,7 @@ def test_task_run_executes_reviews_and_retries_revision(monkeypatch):
             main_module, "generate_task_final_report", fake_final_report
         )
 
-        response = asyncio.run(main_module.run_ai_task(root.id, db))
+        response = asyncio.run(main_module.execute_task_workflow(root.id, db))
 
         db.refresh(root)
         db.refresh(child)
