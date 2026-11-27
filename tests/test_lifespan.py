@@ -17,6 +17,7 @@ def test_lifespan_starts_and_stops_background_worker(monkeypatch):
 
     async def run_lifespan():
         async with main_module.lifespan(main_module.app):
+            await asyncio.sleep(0)
             assert started.is_set()
             assert not main_module.app.state.task_worker_stop.is_set()
 
