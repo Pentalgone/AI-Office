@@ -90,6 +90,18 @@ class AgentExecutor:
     ) -> str:
         normalized_role = (agent_role or "").strip().lower()
 
+        if normalized_role == "tester":
+            from app.services.github_tester import GitHubTester
+
+            context = "\\n".join(
+                part for part in (task_description, instructions, related_reports)
+                if part
+            )
+            pull_request_number = GitHubTester.extract_pull_request_number(context)
+            if pull_request_number is not None:
+                tester = GitHubTester()
+                return await tester.inspect_pull_request(pull_request_number)
+
         if normalized_role == "developer":
             if task_id is None or assignment_id is None:
                 raise ValueError(
