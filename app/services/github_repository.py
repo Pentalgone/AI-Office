@@ -86,6 +86,7 @@ class GitHubRepositoryClient:
         token: str | None = None,
         repository: str | None = None,
         base_branch: str | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ):
         self.token = token or os.getenv("GITHUB_TOKEN")
         self.repository = repository or os.getenv(
@@ -107,6 +108,7 @@ class GitHubRepositoryClient:
         self._client = httpx.AsyncClient(
             base_url="https://api.github.com",
             timeout=httpx.Timeout(30.0, connect=10.0),
+            transport=transport,
             headers={
                 "Authorization": f"Bearer {self.token}",
                 "Accept": "application/vnd.github+json",
