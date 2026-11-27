@@ -118,15 +118,17 @@ def format_source_audit(sources: list[dict]) -> str:
     if not sources:
         return "В отчёте не обнаружено URL-источников."
     lines = [
-        "| URL | Происхождение | Технический статус | Заголовок страницы |",
-        "|---|---|---|---|",
+        "| URL | Происхождение | Технический статус | Заголовок страницы | Фрагмент полученного текста |",
+        "|---|---|---|---|---|",
     ]
     for source in sources:
         url = str(source.get("url", "")).replace("|", "%7C")
         title = str(source.get("page_title", "")).replace("|", "/").replace("\n", " ")[:180]
         origin = str(source.get("source_origin", "не установлено")).replace("|", "/")
         status = str(source.get("status", "unknown"))
-        lines.append(f"| {url} | {origin} | {status} | {title} |")
+        excerpt = re.sub(r"\\s+", " ", str(source.get("details", "")))
+        excerpt = excerpt.replace("|", "/").replace("\n", " ")[:350]
+        lines.append(f"| {url} | {origin} | {status} | {title} | {excerpt or 'Текст не получен'} |")
     lines.append(
         "\n**Важно:** технические статусы не подтверждают достоверность публикации или утверждений. Статус «page_read_claims_not_independently_verified» означает "
         "только получение текста страницы, а не проверку достоверности публикации или утверждений. "
