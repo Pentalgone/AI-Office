@@ -44,7 +44,8 @@ BLOCKED_SUFFIXES = {
     ".cer",
 }
 BLOCKED_NAME_FRAGMENTS = (
-    "secret",
+    "secrets",
+    "secret_",
     "credential",
     "password",
     "private_key",
