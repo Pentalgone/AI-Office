@@ -93,3 +93,52 @@ def test_claim_and_finish_task_run():
         assert run.completed_at is not None
 
     test_engine.dispose()
+
+
+
+def test_task_worker_processes_pending_run_and_persists_result():
+    import asyncio
+
+    from app.services.task_worker import task_worker_loop
+
+    test_engine = create_engine("sqlite://")
+    Base.metadata.create_all(test_engine)
+    TestSession = sessionmaker(bind=test_engine)
+    stop_event = asyncio.Event()
+
+    with TestSession() as db:
+        task = Task(title="Фоновая задача", status="pending", priority="normal")
+        db.add(task)
+        db.flush()
+        run = TaskRun(task_id=task.id, status="pending")
+        db.add(run)
+        db.commit()
+        run_id = run.id
+        task_id = task.id
+
+    async def fake_execute(task_id_arg, db):
+        assert task_id_arg == task_id
+        stop_event.set()
+        return {
+            "task_id": task_id_arg,
+            "task_status": "completed",
+            "final_report_status": "created",
+            "message": "Готово",
+        }
+
+    asyncio.run(
+        task_worker_loop(
+            execute_task=fake_execute,
+            stop_event=stop_event,
+            session_factory=TestSession,
+            poll_interval=0.01,
+        )
+    )
+
+    with TestSession() as db:
+        run = db.get(TaskRun, run_id)
+        assert run.status == "completed"
+        assert '"task_status": "completed"' in run.result_summary
+        assert run.completed_at is not None
+
+    test_engine.dispose()
