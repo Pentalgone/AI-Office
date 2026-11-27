@@ -1635,7 +1635,7 @@ async def execute_assignment(assignment_id: int, db: Session = Depends(get_db)):
             db.query(TaskAssignment).filter(TaskAssignment.id == assignment_id).first()
         )
 
-        if assignment:
+        if assignment and assignment.status not in {"cancelled", "completed"}:
             assignment.status = "failed"
             sync_agent_status(db, assignment.agent_id)
 
@@ -1654,6 +1654,201 @@ async def execute_assignment(assignment_id: int, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=500, detail=f"Ошибка выполнения задания: {str(e)}"
         )
+
+
+@app.post("/ai/tasks/{task_id}/run")
+async def run_ai_task(task_id: int, db: Session = Depends(get_db)):
+    """
+    Выполняет назначения основной задачи, автоматически проверяет отчёты
+    и формирует итоговый отчёт после успешного завершения всех работ.
+    """
+    root_task = db.get(Task, task_id)
+
+    if root_task is None:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+
+    if root_task.parent_task_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Запуск рабочего цикла доступен только для основной задачи",
+        )
+
+    if root_task.status in {"completed", "cancelled"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Нельзя запустить задачу со статусом {root_task.status}",
+        )
+
+    child_tasks = (
+        db.query(Task)
+        .filter(Task.parent_task_id == root_task.id)
+        .order_by(Task.id.asc())
+        .all()
+    )
+    task_ids = [root_task.id, *(child.id for child in child_tasks)]
+
+    assignments = (
+        db.query(TaskAssignment)
+        .filter(TaskAssignment.task_id.in_(task_ids))
+        .order_by(TaskAssignment.id.asc())
+        .all()
+    )
+
+    if not assignments:
+        raise HTTPException(
+            status_code=409,
+            detail="У задачи нет назначений для выполнения",
+        )
+
+    director = AIDirector()
+    outcomes = []
+
+    for assignment_snapshot in assignments:
+        assignment_id = assignment_snapshot.id
+        final_outcome = None
+
+        # Одна первоначальная попытка и максимум две доработки.
+        for attempt in range(3):
+            assignment = db.get(TaskAssignment, assignment_id)
+
+            if assignment is None:
+                final_outcome = {
+                    "assignment_id": assignment_id,
+                    "status": "missing",
+                }
+                break
+
+            if assignment.status != "submitted":
+                if assignment.status not in {
+                    "pending",
+                    "revision_requested",
+                    "failed",
+                }:
+                    final_outcome = {
+                        "assignment_id": assignment_id,
+                        "status": assignment.status,
+                        "message": "Назначение пропущено: оно не ожидает выполнения или проверки.",
+                    }
+                    break
+
+                try:
+                    await execute_assignment(assignment_id=assignment_id, db=db)
+                except HTTPException as error:
+                    db.expire_all()
+                    current = db.get(TaskAssignment, assignment_id)
+                    final_outcome = {
+                        "assignment_id": assignment_id,
+                        "status": current.status if current else "missing",
+                        "error": str(error.detail),
+                    }
+                    break
+
+                db.expire_all()
+                assignment = db.get(TaskAssignment, assignment_id)
+
+            if assignment is None or assignment.status != "submitted":
+                final_outcome = {
+                    "assignment_id": assignment_id,
+                    "status": assignment.status if assignment else "missing",
+                    "error": "Исполнитель не отправил отчёт на проверку.",
+                }
+                break
+
+            task = db.get(Task, assignment.task_id)
+            if task is None:
+                final_outcome = {
+                    "assignment_id": assignment_id,
+                    "status": "missing_task",
+                }
+                break
+
+            try:
+                review = await director.review_report(
+                    task_title=task.title,
+                    task_description=task.description,
+                    instructions=assignment.instructions,
+                    report=assignment.result or "",
+                )
+            except Exception as error:
+                db.add(
+                    TaskEvent(
+                        task_id=assignment.task_id,
+                        event_type="review_failed",
+                        message=(
+                            f"Не удалось проверить отчёт по назначению "
+                            f"№{assignment.id}: {str(error)[:250]}"
+                        ),
+                        actor="system",
+                    )
+                )
+                db.commit()
+                final_outcome = {
+                    "assignment_id": assignment_id,
+                    "status": "submitted",
+                    "review_error": str(error)[:250],
+                }
+                break
+
+            try:
+                process_assignment_review(
+                    assignment=assignment,
+                    reviewer_agent_id=1,
+                    decision=review["decision"],
+                    feedback=review.get("feedback"),
+                    db=db,
+                )
+                db.commit()
+                db.refresh(assignment)
+            except Exception:
+                db.rollback()
+                raise
+
+            if review["decision"] == "approve":
+                final_outcome = {
+                    "assignment_id": assignment_id,
+                    "status": "completed",
+                    "review": "approved",
+                    "attempts": attempt + 1,
+                }
+                break
+
+            if attempt == 2:
+                final_outcome = {
+                    "assignment_id": assignment_id,
+                    "status": "revision_requested",
+                    "review": "changes_requested",
+                    "attempts": attempt + 1,
+                    "feedback": review.get("feedback"),
+                }
+
+        outcomes.append(final_outcome or {
+            "assignment_id": assignment_id,
+            "status": "unknown",
+        })
+
+    recalculate_task_status(db=db, task_id=root_task.id)
+    db.commit()
+    db.refresh(root_task)
+
+    final_report_status = "not_ready"
+    if root_task.status == "completed":
+        try:
+            await generate_task_final_report(task_id=root_task.id, db=db)
+            final_report_status = "created"
+        except Exception as error:
+            final_report_status = f"generation_failed: {str(error)[:250]}"
+
+    return {
+        "task_id": root_task.id,
+        "task_status": root_task.status,
+        "assignments": outcomes,
+        "final_report_status": final_report_status,
+        "message": (
+            "Автоматический рабочий цикл завершён."
+            if root_task.status == "completed"
+            else "Рабочий цикл остановился на незавершённых назначениях. Подробности указаны в результатах."
+        ),
+    }
 
 
 @app.get("/tools/web-search")
