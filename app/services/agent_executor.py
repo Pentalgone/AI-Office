@@ -19,7 +19,11 @@ ROLE_GUIDANCE = {
 - Не называй источник научным, медицинским или авторитетным без подтверждения его типа.
 - Не считай доступность URL доказательством достоверности публикации или её выводов.
 - Если веб-источники не получены, не изображай проведённое исследование.
-- Структура: краткий вывод; метод и источники; подтверждённые факты; сравнение/анализ; ограничения; рекомендации.
+- Если поручение требует проверить конкретное количество исходных источников, проверяй именно это количество и не подменяй его случайными дополнительными ссылками.
+- Для каждого ключевого преимущества или вывода составь матрицу: утверждение; источник и библиографические данные, видимые в полученном тексте; короткий дословный фрагмент (только если он реально присутствует в тексте); объяснение связи фрагмента с утверждением; статус «подтверждено / частично подтверждено / не подтверждено».
+- Не создавай цитату из заголовка, поискового сниппета или собственного пересказа. Если релевантного фрагмента нет в полученном тексте, напиши «релевантный фрагмент не найден».
+- Если исходный источник недоступен, отдельно укажи это и не заменяй его похожей публикацией без явного согласования с поручением.
+- Структура: краткий вывод; метод и источники; матрица доказательств; подтверждённые и неподтверждённые факты; ограничения; рекомендации.
 """,
     "secretary": """
 ТВОЯ РОЛЬ — СЕКРЕТАРЬ.
@@ -112,6 +116,34 @@ class AgentExecutor:
             context += f"\nПредупреждение поиска: {warning}\n"
         return context
 
+    @staticmethod
+    def _build_search_queries(
+        task_title: str,
+        task_description: str | None,
+        instructions: str | None,
+        related_reports: str | None,
+    ) -> list[str]:
+        """Build focused queries from the source material before generic task wording."""
+        candidates = [
+            related_reports or "",
+            instructions or "",
+            task_description or "",
+            task_title or "",
+        ]
+        queries = []
+        for candidate in candidates:
+            cleaned = re.sub(r"https?://\\S+", " ", candidate, flags=re.IGNORECASE)
+            cleaned = re.sub(r"[#>*`|]", " ", cleaned)
+            cleaned = re.sub(r"\\s+", " ", cleaned).strip(" .,:;—-")
+            if len(cleaned) < 25:
+                continue
+            query = cleaned[:220].strip()
+            if query.casefold() not in {item.casefold() for item in queries}:
+                queries.append(query)
+            if len(queries) >= 2:
+                break
+        return queries
+
     async def execute(
         self,
         agent_role: str,
@@ -172,16 +204,28 @@ class AgentExecutor:
                     search_warning = f"Не удалось прочитать переданные URL: {str(error)[:200]}"
 
         if should_search:
-            query = " ".join(
-                " ".join((task_title or "", task_description or "", instructions or "")).split()
-            )[:180]
-            if query:
+            queries = self._build_search_queries(
+                task_title=task_title,
+                task_description=task_description,
+                instructions=instructions,
+                related_reports=related_reports,
+            )
+            for query in queries:
                 try:
-                    search_results = await search_web(query=query, limit=8)
+                    found = await search_web(query=query, limit=5)
+                    known_urls = {
+                        (item.get("final_url") or item.get("url") or "").rstrip("/").casefold()
+                        for item in search_results
+                    }
+                    for item in found:
+                        key = (item.get("final_url") or item.get("url") or "").rstrip("/").casefold()
+                        if key and key not in known_urls:
+                            search_results.append(item)
+                            known_urls.add(key)
                 except Exception as error:
                     search_warning = (
                         (search_warning + "; ") if search_warning else ""
-                    ) + f"Дополнительный поиск не выполнен: {str(error)[:200]}"
+                    ) + f"Поиск по запросу «{query[:70]}» не выполнен: {str(error)[:160]}"
 
         all_results = []
         for item in direct_results:
@@ -220,6 +264,9 @@ class AgentExecutor:
 7. Для утверждения о преимуществе/эффекте приводи конкретное содержание источника и объясняй, как оно поддерживает утверждение. Если этого нет, пометь утверждение как неподтверждённое.
 8. Не выдавай результаты поисковой выдачи за прочитанные публикации. Не выдавай техническую доступность URL за проверку фактов.
 9. Если источников недостаточно, честно сообщи об этом и не заполняй пробелы вымышленными публикациями.
+10. Для каждого существенного вывода приведи короткий дословный фрагмент из содержимого соответствующей страницы и объясни его связь с выводом. Если фрагмента в полученном содержимом нет, не создавай цитату.
+11. При поручении проверить конкретные исходные источники перечисли их по отдельности и не заявляй, что проверил больше источников, чем фактически обработал.
+12. Разделяй три результата: идентификация публикации; техническое чтение страницы; подтверждение конкретного утверждения её содержанием.
 
 ПРАВИЛА ДОСТОВЕРНОСТИ И БЕЗОПАСНОСТИ:
 1. Выполни поручение и предоставь конкретный полезный результат.
