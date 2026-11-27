@@ -91,3 +91,14 @@ def test_report_supplied_url_is_not_mislabeled_as_independent_discovery():
         "source_origin": "URL из отчёта сотрудника",
     })
     assert status == "reported_url_page_read_not_independently_discovered"
+
+
+def test_source_audit_includes_retrieved_excerpt_for_director_review():
+    rendered = format_source_audit([{
+        "url": "https://example.org/paper",
+        "status": "page_read_claims_not_independently_verified",
+        "page_title": "Paper title",
+        "details": "The study found improved visibility during the procedure.",
+    }])
+    assert "Фрагмент полученного текста" in rendered
+    assert "improved visibility" in rendered
