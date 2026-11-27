@@ -113,6 +113,24 @@ def recover_interrupted_runs(session_factory=SessionLocal) -> int:
             )
             recovered += 1
 
+        # Reconcile every agent at startup, not only agents attached to
+        # interrupted runs. Persisted statuses can be stale after a run has
+        # already finished with needs_attention (for example revision_requested).
+        agents = db.query(Agent).all()
+        for agent in agents:
+            if agent.status == "offline":
+                continue
+
+            active_count = (
+                db.query(TaskAssignment)
+                .filter(
+                    TaskAssignment.agent_id == agent.id,
+                    TaskAssignment.status.in_(WORKING_ASSIGNMENT_STATUSES),
+                )
+                .count()
+            )
+            agent.status = "working" if active_count else "idle"
+
         db.commit()
 
     return recovered
