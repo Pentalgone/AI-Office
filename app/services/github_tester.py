@@ -1,3 +1,4 @@
+import asyncio
 import re
 
 from app.services.github_repository import GitHubRepositoryClient
@@ -23,7 +24,15 @@ class GitHubTester:
             if not commit_sha:
                 raise ValueError("У Pull Request не найден commit SHA.")
 
-            checks = await repository.get_commit_checks(commit_sha)
+            checks = []
+            for attempt in range(12):
+                checks = await repository.get_commit_checks(commit_sha)
+                if checks and all(
+                    check.get("status") == "completed" for check in checks
+                ):
+                    break
+                if attempt < 11:
+                    await asyncio.sleep(5)
 
         if not checks:
             return (
