@@ -18,7 +18,7 @@ from app.services.web_search import search_web
 from app.services.director import AIDirector
 from sqlalchemy.orm import Session
 
-from app.db.database import Base, engine, SessionLocal
+from app.db.database import SessionLocal, initialize_database
 from app.services.dispatcher import find_available_agents, dispatch_task
 from app.services.task_manager import recalculate_task_status
 from app.db.models import (
@@ -34,7 +34,7 @@ from app.db.models import (
 # Создание таблиц при запуске сервера
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
+    initialize_database()
     yield
 
 
