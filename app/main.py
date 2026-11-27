@@ -1654,6 +1654,8 @@ async def execute_assignment(assignment_id: int, db: Session = Depends(get_db)):
             task_description=task.description,
             instructions=instructions,
             related_reports=related_reports,
+            task_id=task.id,
+            assignment_id=assignment.id,
         )
 
         return submit_assignment_result(
