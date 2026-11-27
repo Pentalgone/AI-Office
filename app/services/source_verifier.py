@@ -4,7 +4,7 @@ from urllib.parse import urlparse, urlunparse
 from app.services.web_search import read_urls
 
 
-URL_PATTERN = re.compile(r"https?://[^\\s<>\"']+", re.IGNORECASE)
+URL_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
 
 def extract_urls(text: str | None) -> list[str]:
@@ -144,15 +144,15 @@ def format_source_audit(sources: list[dict]) -> str:
     ]
     for source in sources:
         url = str(source.get("url", "")).replace("|", "%7C")
-        title = str(source.get("page_title", "")).replace("|", "/").replace("\\n", " ")[:180]
+        title = str(source.get("page_title", "")).replace("|", "/").replace("\n", " ")[:180]
         origin = str(source.get("source_origin", "не установлено")).replace("|", "/")
         status = str(source.get("status", "unknown"))
         lines.append(f"| {url} | {origin} | {status} | {title} |")
     lines.append(
-        "\\n**Важно:** статус «page_read_claims_not_independently_verified» означает "
+        "\n**Важно:** статус «page_read_claims_not_independently_verified» означает "
         "только то, что текст страницы был получен. Он не подтверждает научную "
         "достоверность публикации и не доказывает конкретное утверждение. "
         "Статус «not_in_research_context» означает, что ссылка отсутствовала "
         "в фактических материалах исследования и не должна использоваться как доказательство."
     )
-    return "\\n".join(lines)
+    return "\n".join(lines)
