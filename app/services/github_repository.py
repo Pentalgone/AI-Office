@@ -5,6 +5,9 @@ from pathlib import PurePosixPath
 from urllib.parse import quote
 
 import httpx
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 class GitHubRepositoryError(RuntimeError):
@@ -177,6 +180,20 @@ class GitHubRepositoryClient:
                 f"Файл слишком большой для безопасной передачи модели: {safe_path}"
             )
         return content
+
+    async def get_pull_request(self, number: int) -> dict:
+        return await self._request(
+            "GET",
+            f"/repos/{self.repository}/pulls/{number}",
+        )
+
+    async def get_commit_checks(self, commit_sha: str) -> list[dict]:
+        result = await self._request(
+            "GET",
+            f"/repos/{self.repository}/commits/{commit_sha}/check-runs",
+            params={"per_page": 100},
+        )
+        return result.get("check_runs", [])
 
     async def create_draft_change(
         self,
