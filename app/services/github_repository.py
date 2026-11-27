@@ -40,7 +40,15 @@ BLOCKED_SUFFIXES = {
     ".key",
     ".p12",
     ".pfx",
+    ".crt",
+    ".cer",
 }
+BLOCKED_NAME_FRAGMENTS = (
+    "secret",
+    "credential",
+    "password",
+    "private_key",
+)
 
 
 def validate_repository_path(path: str) -> str:
@@ -63,8 +71,12 @@ def validate_repository_path(path: str) -> str:
         raise ValueError("Доступ к служебным каталогам запрещён.")
 
     filename = pure_path.name.casefold()
-    if filename == ".env" or filename.startswith(".env."):
-        raise ValueError("Developer не имеет доступа к файлам окружения.")
+    if (
+        filename in {".env", ".envrc"}
+        or filename.startswith(".env.")
+        or any(fragment in filename for fragment in BLOCKED_NAME_FRAGMENTS)
+    ):
+        raise ValueError("Developer не имеет доступа к файлам окружения и секретам.")
     if any(filename.endswith(suffix) for suffix in BLOCKED_SUFFIXES):
         raise ValueError("Доступ к бинарным данным и ключам запрещён.")
 
