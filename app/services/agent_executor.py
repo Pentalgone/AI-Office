@@ -85,8 +85,28 @@ class AgentExecutor:
         task_description: str | None,
         instructions: str | None,
         related_reports: str | None = None,
+        task_id: int | None = None,
+        assignment_id: int | None = None,
     ) -> str:
         normalized_role = (agent_role or "").strip().lower()
+
+        if normalized_role == "developer":
+            if task_id is None or assignment_id is None:
+                raise ValueError(
+                    "Для Developer не передан идентификатор задачи или назначения."
+                )
+            from app.services.github_developer import GitHubDeveloper
+
+            developer = GitHubDeveloper(self.llm)
+            return await developer.execute(
+                task_title=task_title,
+                task_description=task_description,
+                instructions=instructions,
+                task_id=task_id,
+                assignment_id=assignment_id,
+                related_reports=related_reports,
+            )
+
         search_results = []
         direct_results = []
 
