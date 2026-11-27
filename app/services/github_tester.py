@@ -9,7 +9,7 @@ class GitHubTester:
         if not isinstance(text, str):
             return None
         match = re.search(
-            r"https?://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/(\\d+)",
+            r"https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/(\d+)",
             text,
             flags=re.IGNORECASE,
         )
